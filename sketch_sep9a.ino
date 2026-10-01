@@ -1,107 +1,224 @@
-#include <string.h>
-#define mqpin A0//pin analogique 
-#define rl 20.0//resistance interne du capteur 
-#define cleanair 3.6//variation rs/ro en air pur 
-//parametre de la courbe avec log-log
-#define alcohol_cuve_a 77.25
-#define alcohol_cuve_b -3.18
+#include <string.h>         
+#include <LiquidCrystal.h>  
 
-#define NB_ECHANTILLONS 50 //seuil normal du ppm en air pur 
-//le ppm est la partie d'air par million il permet d'avoir la concentration de l'alcool par million d'air inspire 
-//ppm = a* (rs/ro)^b
-const float seuilPPM = 50.0;//seuil normal de ppm 
-float Ro = 10.0;//valeur de la resistance Ro en air pure 
+// Définition des broches et initialisation de l'écran LCD
+const int rs = 11, en = 10, d4 = 5, d5 = 4, d6 = 3, d7 = 2; 
+LiquidCrystal lcd(rs, en, d4, d5, d6, d7);  
 
+#define mqpin A0            
+#define rl 20.0             
+#define cleanair 3.6        
+#define buzzer 8            
+#define buttom 9            
 
-float readRS(){ //cette fonction permet de determiner la valeur de rs 
-    int raw =analogRead(mqpin);//lecteur de la valeu de la tension 
-    float volt = raw *(5.0/ 1023.0);//conversion de la valeur analogique en valeur mumeriaue 10bits
-    if (volt ==0) volt ==0.01;//evite les division par zero
-    float rp = 5.0 * rl;//detrermination de la tension en fonction 
-    float RS = ( rp/ volt) - rl;//determination de la resistance 
-    return RS;//valeur de rs stocke en memoir
+#define alcohol_cuve_a 77.25 
+#define alcohol_cuve_b -3.18 
+#define NB_ECHANTILLONS 50   
+
+const float seuilPPM = 50.0; 
+bool alarmeDeclenchee = false; // Permet de bloquer la sonnerie après 3 bips
+float Ro = 10.0;               
+
+// Chaîne globale pour reconstruire les commandes série sans bloquer le processeur
+String commandeRecue = "";
+
+void reset_system(); 
+float readRS(); 
+float calibrateRo(); 
+float getAlcoholppm(); 
+float ppmtogramperlitre(float ppm); 
+String etat(float ppm);  
+void ecouter_ordinateur();
+
+// CORRECTION SYNTAXE : Retrait de la parenthèse fermante en trop
+float readRS(){    
+  int raw = analogRead(mqpin);   
+  float volt = raw * (5.0 / 1023.0);   
+  if (volt == 0) volt = 0.01;    
+  float rp = 5.0 * rl;   
+  float RS = (rp / volt) - rl;   
+  return RS; 
+}  
+
+float calibrateRo(){   
+  Serial.println("Calibrage de Ro en air pur...");   
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Calibrage Ro...");
+  
+  float rsSum = 0;   
+  for (int i = 0 ; i < NB_ECHANTILLONS; i++ ){     
+    rsSum += readRS();     
     
+    lcd.setCursor(0, 1);
+    lcd.print("Etape: ");
+    lcd.print(i + 1);
+    lcd.print("/50");
+    
+    delay(100); 
+  }   
+  float rsA = rsSum / 50.0;   
+  float ro = rsA / cleanair;   
+  
+  Serial.print("Valeur de Ro calculee : ");   
+  Serial.println(ro);   
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Ro calcule:");
+  lcd.setCursor(0, 1);
+  lcd.print(ro);
+  delay(2000); 
+  
+  return ro; 
+}  
+
+float getAlcoholppm(){   
+  float rs = readRS();   
+  float ratio = rs / Ro;   
+  float ppm = alcohol_cuve_a * pow(ratio, alcohol_cuve_b);   
+  return ppm; 
+}  
+
+float ppmtogramperlitre(float ppm) {   
+  float gram = ppm * 1000;   
+  return gram;                   
 } 
-float calibrateRo(){//cette fonction permet d'avoior la valeur reel de Ro
-  Serial.println("calibrage de Ro en air pur...");//affiche dans le moniteur serie calibrage de R0 en air pur...
-  float rsSum = 0;//initialisation des valeur de rs pour le calibrage 
-  for (int i = 0 ; i < NB_ECHANTILLONS; i++ ){//boucle for pour incrementer la valeur de rssum
-    rsSum += readRS();//ajoute la valeur incrementer a la valeur de rs lue 
-    delay(2000);//delai de 2000ms
-  }
-  float rsA = rsSum / 50.0;//ration rs / 50.0 avec 50.0 le ppm en air pur 
-  float ro = rsA / cleanair;//determination de la valeurt reel de ro au moment de l'analyse
-  Serial.println("valeur de Ro :");//affiche la valeur vde ro dans le moniteur serie
-  Serial.println(ro);
-  return ro;//stocke ro en memoir 
-}
 
-float getAlcoholppm(){//cette fonction permet d'avoir la quantite d'alcool en ppm 
-  float rs = readRS();//lis la valeur de rs 
-  float ratio = rs / Ro;//fais le ration rs /ro 
-  float ppm =  alcohol_cuve_a * pow(ratio, alcohol_cuve_b);//determine la valeur de la quantite d'alcool en ppm
-  return ppm;//stocke ppm en memoir 
-}
+void setup() {   
+  pinMode(LED_BUILTIN, OUTPUT);   
+  pinMode(buzzer, OUTPUT);             
+  pinMode(buttom, INPUT_PULLUP);          
+  Serial.begin(9600); 
+  
+  // Configuration du nombre de colonnes et lignes du LCD
+  lcd.begin(16, 2); 
+  
+  Serial.println("Chauffage du capteur 20s...");   
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Chauffage capteur");
+  lcd.setCursor(0, 1);
+  lcd.print("Veuillez attendre");
+  delay(2000); 
+  
+  Ro = calibrateRo();   
+  Serial.print("Initialisation Ro : ");   
+  Serial.println(Ro);  
+}  
 
-
-void setup() {//initialiation des differentes variables 
-  pinMode(LED_BUILTIN, OUTPUT);
-  Serial.begin(9600);//connexion entre l'ordinateur et l'arduino
-  Serial.println("chauffage du capteur 20s...");//affiche dans le moniteur serie chauffage du capteur 20s...
-  delay(200);//delai de 200ms
-  Ro = calibrateRo();//valeur de Ro avec appel de la fonction calibrateRo() 
-  Serial.println(Ro); // affiche la valeur de ro dans le moniteur serie 
-
-}
-String etat(float ppm){
-  #define buzzer 8//cette fonction permet de determiner clairement l'etat d'ivresse de la personne 
-  if (ppm <100.0 ){
-    noTone(buzzer);//si le ppm est < 100.0 affiche sobre 
-    return "Sobre";
-  }
-  else if (ppm <250 ){//si le ppm est <250 affiche trace d'alcool detecte
+String etat(float ppm){   
+  if (ppm < 100.0) { 
     noTone(buzzer); 
-    return "trace d'alcool detecte";
+    alarmeDeclenchee = false; 
+    return "Sobre"; 
+  }   
+  else if (ppm < 250.0) { 
+    noTone(buzzer); 
+    alarmeDeclenchee = false; 
+    return "Traces detectees"; 
+  } 
+  
+  String libelle = "";
+  if (ppm < 450.0)       libelle = "Seuil legal";   
+  else if (ppm < 1000.0) libelle = "Ivresse...";   
+  else                   libelle = "Intox severe";   
+
+  if (alarmeDeclenchee == false) {
+    for (int i = 0; i < 3; i++) {
+      tone(buzzer, 1500); 
+      delay(200);         
+      noTone(buzzer);     
+      delay(200);         
+    }
+    alarmeDeclenchee = true; 
   }
-  else if (ppm < 450){
-    tone(buzzer, 1000);//si le ppm est <450 affiche seil legal 
-    return "seil legal ";
-  }
-  else if (ppm <1000){//si le ppm est <1000 affiche ivresse...
-    tone(buzzer, 2000);
-    return "ivresse...";
-  }
-  else {//sinon affiche intoxication severe 
-    tone(buzzer ,3000);
-    return "intoxication severe";
-  }
+
+  return libelle; 
 }
 
-void loop() {
-  reset_system();
-  //fonction qui permet l'execution du programme  
-  digitalWrite(LED_BUILTIN, HIGH);  // turn the LED on (HIGH is the voltage level)
-  delay(1000);                      // wait for a second
-  digitalWrite(LED_BUILTIN, LOW);   // turn the LED off by making the voltage LOW
-  delay(1000);  
-  float ppm =getAlcoholppm();//appel de la fonction getAlcoholppm()
-  String ivresse = etat(ppm);//appel de la fonction etat(ppm) avec ppm comme arguments de la fonction 
-  Serial.println("estimation d'alcool:");//affiche estimation d'alcool: dqns le moniteur serie 
-  Serial.println(ppm);//affiche la valeur de la variable ppm dans le moniteur serie 
-  Serial.println("ppm");// affiche la chaine ppm 
-  Serial.println(ivresse);//afficher ivresse 
-  delay(1000);//delai de 1000ms 
+void loop() { 
+  // Analyse immédiate et fluide du port série
+  pinMode(buttom, INPUT_PULLUP);
+  ecouter_ordinateur();  
+  
+  reset_system();       
+  digitalWrite(LED_BUILTIN, HIGH);     
+  delay(250);                         
+  digitalWrite(LED_BUILTIN, LOW);      
+  delay(250);      
+  
+  float ppm = getAlcoholppm();   
+  float gram = ppmtogramperlitre(ppm); 
+  String ivresse = etat(ppm);      
+  
+  Serial.print("DATA:");   
+  Serial.print(ivresse);   
+  Serial.print(";");   
+  Serial.print(ppm);   
+  Serial.print(";");   
+  Serial.println(gram);      
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Etat: ");
+  lcd.print(ivresse);
+  
+  lcd.setCursor(0, 1);
+  lcd.print("PPM: ");
+  lcd.print(ppm, 1); 
+  lcd.print(" g/L: ");
+  lcd.print(gram, 1);
+  
+  delay(1000); 
+}  
 
-  // put your main code here, to run repeatedly:
-
+void reset_system(){   
+  if (digitalRead(buttom) == HIGH) {     
+    Serial.println("Reset demande...");     
+    
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Reset demande...");
+    delay(1000);
+    
+    noTone(buzzer);     
+    Ro = calibrateRo();     
+    delay(300);   
+  } 
 }
 
-void reset_system(){
-  #define buttom 7
-  if (digitalRead(buttom) == LOW) {
-    Serial.println("reset demande");
-    noTone(buzzer);
-    Ro = calibrateRo();
-    delay(300);
+// CORRECTION LOGIQUE : Réception non bloquante par accumulation de caractères
+void ecouter_ordinateur() {
+  while (Serial.available() > 0) {
+    char c = Serial.read(); // Lit le caractère actuel sans attendre le suivant
+    
+    if (c == '\n') { // Fin de ligne détectée : la commande est complète
+      commandeRecue.trim(); 
+
+      if (commandeRecue == "STOP_BUZZER") {
+        noTone(buzzer);
+        Serial.println("RPT:Buzzer stoppe manuellement");
+      }
+      else if (commandeRecue == "SONNER") {
+        alarmeDeclenchee = false; // Permet de relancer les 3 bips
+        Serial.println("RPT:Demande de sonnerie recue");
+      }
+      else if (commandeRecue == "RECALIBRER") {
+        Serial.println("RPT:Calibrage distant en cours...");
+        Ro = calibrateRo();
+      }
+      else if (commandeRecue.length() > 0) {
+        Serial.print("RPT:Commande inconnue (");
+        Serial.print(commandeRecue);
+        Serial.println(")");
+      }
+      
+      commandeRecue = ""; // Réinitialise le tampon pour la prochaine commande
+    } 
+    else if (c != '\r') {
+      commandeRecue += c; // Ajoute le caractère à la commande en cours (ignore le retour chariot Windows)
+    }
   }
 }
